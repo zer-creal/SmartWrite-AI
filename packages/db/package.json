@@ -1,0 +1,17 @@
+{
+  "name": "@smartwrite/db",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "migrate": "prisma migrate dev",
+    "generate": "prisma generate",
+    "db:push": "prisma db push",
+    "studio": "prisma studio"
+  },
+  "dependencies": {
+    "@prisma/client": "4.16.2"
+  },
+  "devDependencies": {
+    "prisma": "4.16.2"
+  }
+}

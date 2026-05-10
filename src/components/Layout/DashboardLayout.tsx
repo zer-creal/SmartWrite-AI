@@ -225,7 +225,7 @@ export default function DashboardLayout({ children, currentDocId }: { children: 
                       }
                     `}
                   >
-                    <span className="text-base">{file.icon}</span>
+                    <FileText className="w-4 h-4 text-gray-400" />
                     <span className="flex-1 truncate">{file.title}</span>
                     {currentFileId === file.id && (
                       <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full" />

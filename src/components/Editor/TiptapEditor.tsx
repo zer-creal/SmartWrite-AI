@@ -2,6 +2,7 @@
 
 import { useEditor, EditorContent, BubbleMenu } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
+import { textblockTypeInputRule, Extension } from '@tiptap/core';
 import Placeholder from '@tiptap/extension-placeholder';
 import Link from '@tiptap/extension-link';
 import Image from '@tiptap/extension-image';
@@ -9,14 +10,14 @@ import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
 import TaskList from '@tiptap/extension-task-list';
 import TaskItem from '@tiptap/extension-task-item';
 import Typography from '@tiptap/extension-typography';
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { 
   Bold, 
   Italic, 
-  MessageSquare, 
   Sparkles,
   Heading1,
   Heading2,
+  Heading3,
   List,
   ListOrdered,
   Save,
@@ -26,240 +27,272 @@ import {
   CheckSquare,
   X,
   Upload,
+  Quote,
+  Minus,
+  FileText,
+  Hash,
 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
+import { useFileManager } from '@/context/FileManagerContext';
 import { common, createLowlight } from 'lowlight';
 import './editor-styles.css';
 
-// 初始化 lowlight 用于代码高亮
 const lowlight = createLowlight(common);
-
-interface VirtualCursor {
-  id: string;
-  name: string;
-  color: string;
-  top: number;
-  left: number;
-  visible: boolean;
-}
 
 interface TiptapEditorProps {
   docId: string;
 }
 
-const VIRTUAL_USERS = [
-  { name: 'AI 助手', color: '#10b981' },
-  { name: '张三', color: '#3b82f6' },
-  { name: '李四', color: '#f59e0b' },
-  { name: '王五', color: '#ef4444' },
-  { name: '团队成员', color: '#8b5cf6' },
+interface CommandItem {
+  id: string;
+  title: string;
+  description: string;
+  icon: React.ReactNode;
+}
+
+const COMMANDS: CommandItem[] = [
+  { id: 'heading1', title: '标题 1', description: '大标题', icon: <Heading1 className="w-4 h-4" /> },
+  { id: 'heading2', title: '标题 2', description: '中标题', icon: <Heading2 className="w-4 h-4" /> },
+  { id: 'heading3', title: '标题 3', description: '小标题', icon: <Heading3 className="w-4 h-4" /> },
+  { id: 'bold', title: '粗体', description: '**文字**', icon: <Bold className="w-4 h-4" /> },
+  { id: 'italic', title: '斜体', description: '*文字*', icon: <Italic className="w-4 h-4" /> },
+  { id: 'bulletList', title: '无序列表', description: '项目符号', icon: <List className="w-4 h-4" /> },
+  { id: 'orderedList', title: '有序列表', description: '编号列表', icon: <ListOrdered className="w-4 h-4" /> },
+  { id: 'taskList', title: '待办清单', description: '勾选框列表', icon: <CheckSquare className="w-4 h-4" /> },
+  { id: 'code', title: '代码块', description: '代码高亮', icon: <Code className="w-4 h-4" /> },
+  { id: 'quote', title: '引用', description: '引用块', icon: <Quote className="w-4 h-4" /> },
+  { id: 'divider', title: '分割线', description: '---', icon: <Minus className="w-4 h-4" /> },
+  { id: 'page', title: '新页面', description: '创建页面', icon: <FileText className="w-4 h-4" /> },
+  { id: 'ai', title: 'AI 助手', description: '智能写作辅助', icon: <Sparkles className="w-4 h-4" /> },
 ];
 
 export default function TiptapEditor({ docId }: TiptapEditorProps) {
-  const [virtualCursors, setVirtualCursors] = useState<VirtualCursor[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [showImageModal, setShowImageModal] = useState(false);
-  const [currentDocument, setCurrentDocument] = useState<any>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const { user, isLoading: authIsLoading } = useAuth();
+  const [showCommandMenu, setShowCommandMenu] = useState(false);
+  const [commandSearch, setCommandSearch] = useState('');
+  const { user } = useAuth();
+  const { files, saveFileContent } = useFileManager();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const editorRef = useRef<HTMLDivElement>(null);
   const debounceTimer = useRef<NodeJS.Timeout | null>(null);
+
+  const currentFile = files.find(f => f.id === docId);
+
+  const MarkdownInputRules = Extension.create({
+    name: 'markdownInputRules',
+    addInputRules() {
+      return [
+        // # 空格 → H1 标题
+        textblockTypeInputRule({
+          find: /^# $/,
+          type: this.editor.schema.nodes.heading,
+          getAttributes: () => ({ level: 1 }),
+        }),
+        // ## 空格 → H2 标题
+        textblockTypeInputRule({
+          find: /^## $/,
+          type: this.editor.schema.nodes.heading,
+          getAttributes: () => ({ level: 2 }),
+        }),
+        // ### 空格 → H3 标题
+        textblockTypeInputRule({
+          find: /^### $/,
+          type: this.editor.schema.nodes.heading,
+          getAttributes: () => ({ level: 3 }),
+        }),
+        // > 空格 → 引用块
+        textblockTypeInputRule({
+          find: /^> $/,
+          type: this.editor.schema.nodes.blockquote,
+        }),
+        // - 空格 → 无序列表
+        textblockTypeInputRule({
+          find: /^- $/,
+          type: this.editor.schema.nodes.bulletList,
+        }),
+        // 1. 空格 → 有序列表
+        textblockTypeInputRule({
+          find: /^(\d+)\. $/,
+          type: this.editor.schema.nodes.orderedList,
+          getAttributes: (match) => ({ start: parseInt(match[1], 10) }),
+        }),
+      ];
+    },
+  });
 
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
-        heading: {
-          levels: [1, 2, 3],
-        },
+        heading: { levels: [1, 2, 3] },
         codeBlock: false,
       }),
+      MarkdownInputRules,
       Placeholder.configure({
-        placeholder: "输入 '/' 查看命令，或开始写作...",
+        placeholder: "输入 '/' 查看命令，或使用 Markdown 快捷语法（# ## ### > - 1.）",
       }),
       Link.configure({
         openOnClick: true,
-        HTMLAttributes: {
-          class: 'text-blue-500 underline hover:text-blue-700',
-        },
+        HTMLAttributes: { class: 'text-blue-500 underline hover:text-blue-700' },
       }),
       Image.configure({
-        HTMLAttributes: {
-          class: 'editor-image',
-        },
+        HTMLAttributes: { class: 'editor-image' },
       }),
       CodeBlockLowlight.configure({
         lowlight,
-        HTMLAttributes: {
-          class: 'rounded-lg bg-slate-900 text-slate-50 p-4 my-4 overflow-x-auto',
-        },
+        HTMLAttributes: { class: 'rounded-lg bg-slate-900 text-slate-50 p-4 my-4 overflow-x-auto' },
       }),
       TaskList.configure({
-        HTMLAttributes: {
-          class: 'not-prose pl-0',
-        },
+        HTMLAttributes: { class: 'not-prose pl-0' },
       }),
       TaskItem.configure({
-        HTMLAttributes: {
-          class: 'flex items-start gap-2 my-1',
-        },
+        HTMLAttributes: { class: 'flex items-start gap-2 my-1' },
         nested: true,
       }),
       Typography,
     ],
-    content: '',
-    immediatelyRender: false,
+    content: currentFile?.content || '',
     onUpdate: ({ editor }) => {
       setIsSaving(true);
-      // 防抖自动保存
       if (debounceTimer.current) {
         clearTimeout(debounceTimer.current);
       }
       debounceTimer.current = setTimeout(() => {
-        handleAutoSave();
+        if (editor && docId) {
+          const content = editor.getJSON();
+          saveFileContent(docId, content).then(() => setIsSaving(false)).catch(() => setIsSaving(false));
+        }
       }, 1000);
     },
   });
 
-  // 验证 UUID 格式
-  const isValidUUID = (id: string): boolean => {
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-    return uuidRegex.test(id);
-  };
-
-  // 从 Supabase 获取文档
   useEffect(() => {
-    const fetchDocument = async () => {
-      if (!docId || authIsLoading) return;
-      if (!user) {
-        console.warn('用户未登录，无法获取文档');
-        setIsLoading(false);
-        return;
-      }
+    if (editor) {
+      const handleKeyDown = (event: KeyboardEvent) => {
+        if (!editor) return;
 
-      if (!isValidUUID(docId)) {
-        console.error('无效的文档 ID 格式:', docId);
-        setIsLoading(false);
-        return;
-      }
-      
-      setIsLoading(true);
-      try {
-        const { data, error } = await supabase
-          .from('documents')
-          .select('*')
-          .eq('id', docId)
-          .eq('user_id', user.id)
-          .single();
-        
-        if (error) {
-          console.error('获取文档失败:', error);
-          if (error.code === '42501') {
-            console.error('行级安全策略阻止了访问，请在 Supabase 控制台中配置 RLS 策略');
-          }
-        } else if (data) {
-          setCurrentDocument(data);
-          if (editor) {
-            editor.commands.setContent(data.content || '', false);
-          }
+        // 处理 / 命令面板
+        if (event.key === '/' && !editor.isActive('code') && !editor.isActive('codeBlock')) {
+          event.preventDefault();
+          setCommandSearch('');
+          setShowCommandMenu(true);
         }
-      } catch (error) {
-        console.error('获取文档时发生错误:', error);
-      } finally {
-        setIsLoading(false);
-      }
-    };
 
-    fetchDocument();
-  }, [docId, editor, authIsLoading, user]);
+        // 按 ESC 关闭命令面板
+        if (event.key === 'Escape') {
+          setShowCommandMenu(false);
+        }
+      };
 
-  // 自动保存到 Supabase
-  const handleAutoSave = useCallback(async () => {
-    if (!editor || !docId || !user) return;
+      editor.view.dom.addEventListener('keydown', handleKeyDown);
+      return () => {
+        editor.view.dom.removeEventListener('keydown', handleKeyDown);
+      };
+    }
+  }, [editor]);
+
+  const filteredCommands = useMemo(() => {
+    if (!commandSearch) return COMMANDS;
+    const searchLower = commandSearch.toLowerCase();
+    return COMMANDS.filter(cmd => 
+      cmd.title.toLowerCase().includes(searchLower) || 
+      cmd.description.toLowerCase().includes(searchLower)
+    );
+  }, [commandSearch]);
+
+  const handleCommand = useCallback((commandId: string) => {
+    if (!editor) return;
+    editor.view.dom.focus();
     
-    if (!isValidUUID(docId)) {
-      console.error('无效的文档 ID 格式:', docId);
-      setIsSaving(false);
-      return;
+    const { state } = editor;
+    const { selection } = state;
+    const { $from } = selection;
+    
+    if ($from.pos > 0) {
+      const textBefore = state.doc.textBetween(Math.max(0, $from.pos - 1), $from.pos);
+      if (textBefore === '/') {
+        editor.chain().focus().deleteRange({ from: $from.pos - 1, to: $from.pos }).run();
+      }
     }
     
-    try {
-      const content = editor.getJSON();
-      const { error } = await supabase
-        .from('documents')
-        .update({ content, updated_at: new Date().toISOString() })
-        .eq('id', docId)
-        .eq('user_id', user.id);
+    setTimeout(() => {
+      if (!editor) return;
       
-      if (error) {
-        console.error('保存文档失败:', error);
-        if (error.code === '42501') {
-          console.error('行级安全策略阻止了保存，请在 Supabase 控制台中配置 RLS 策略');
-        }
-      } else {
-        setIsSaving(false);
+      switch (commandId) {
+        case 'heading1':
+          editor.chain().focus().toggleHeading({ level: 1 }).run();
+          break;
+        case 'heading2':
+          editor.chain().focus().toggleHeading({ level: 2 }).run();
+          break;
+        case 'heading3':
+          editor.chain().focus().toggleHeading({ level: 3 }).run();
+          break;
+        case 'bold':
+          editor.chain().focus().toggleBold().run();
+          break;
+        case 'italic':
+          editor.chain().focus().toggleItalic().run();
+          break;
+        case 'bulletList':
+          editor.chain().focus().toggleBulletList().run();
+          break;
+        case 'orderedList':
+          editor.chain().focus().toggleOrderedList().run();
+          break;
+        case 'taskList':
+          editor.chain().focus().toggleTaskList().run();
+          break;
+        case 'code':
+          editor.chain().focus().toggleCodeBlock().run();
+          break;
+        case 'quote':
+          editor.chain().focus().toggleBlockquote().run();
+          break;
+        case 'divider':
+          editor.chain().focus().setHorizontalRule().run();
+          break;
+        case 'page':
+          console.log('创建新页面');
+          break;
+        case 'ai':
+          console.log('AI 助手');
+          break;
       }
-    } catch (error) {
-      console.error('保存文档时发生错误:', error);
-      setIsSaving(false);
-    }
-  }, [editor, docId, isValidUUID, user]);
+    }, 10);
+    
+    setShowCommandMenu(false);
+  }, [editor]);
 
-  // 手动保存
   const handleManualSave = useCallback(async () => {
-    if (!editor || !docId || !user) return;
-    
-    if (!isValidUUID(docId)) {
-      console.error('无效的文档 ID 格式:', docId);
-      setIsSaving(false);
-      return;
-    }
-    
+    if (!editor || !docId) return;
     try {
       setIsSaving(true);
       const content = editor.getJSON();
-      const { error } = await supabase
-        .from('documents')
-        .update({ content, updated_at: new Date().toISOString() })
-        .eq('id', docId)
-        .eq('user_id', user.id);
-      
-      if (error) {
-        console.error('手动保存失败:', error);
-        if (error.code === '42501') {
-          console.error('行级安全策略阻止了保存，请在 Supabase 控制台中配置 RLS 策略');
-        }
-      } else {
-        setIsSaving(false);
-      }
+      await saveFileContent(docId, content);
+      setIsSaving(false);
     } catch (error) {
-      console.error('手动保存时发生错误:', error);
+      console.error('手动保存失败:', error);
       setIsSaving(false);
     }
-  }, [editor, docId, isValidUUID, user]);
+  }, [editor, docId, saveFileContent]);
 
-  // 插入图片到编辑器
   const insertImage = useCallback((src: string) => {
     if (editor) {
       editor.chain().focus().setImage({ src }).run();
     }
   }, [editor]);
 
-  // 处理文件上传
   const handleFileUpload = useCallback((file: File) => {
     if (!file.type.startsWith('image/')) {
       alert('请上传图片文件');
       return;
     }
-
     const objectUrl = URL.createObjectURL(file);
     insertImage(objectUrl);
     console.log('🖼️ 图片已插入:', file.name);
   }, [insertImage]);
 
-  // 拖拽事件处理
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -276,7 +309,6 @@ export default function TiptapEditor({ docId }: TiptapEditorProps) {
     e.preventDefault();
     e.stopPropagation();
     setIsDragOver(false);
-
     const files = e.dataTransfer.files;
     if (files.length > 0) {
       const file = files[0];
@@ -284,7 +316,6 @@ export default function TiptapEditor({ docId }: TiptapEditorProps) {
     }
   }, [handleFileUpload]);
 
-  // 文件选择处理
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -293,24 +324,19 @@ export default function TiptapEditor({ docId }: TiptapEditorProps) {
     }
   }, [handleFileUpload]);
 
-  // 打开图片模态框
   const openImageModal = useCallback(() => {
     setShowImageModal(true);
   }, []);
 
-  // 关闭图片模态框
   const closeImageModal = useCallback(() => {
     setShowImageModal(false);
   }, []);
 
-  // 添加链接
   const addLink = useCallback(() => {
     if (editor) {
       const previousUrl = editor.getAttributes('link').href;
       const url = window.prompt('请输入链接 URL:', previousUrl);
-      
       if (url === null) return;
-      
       if (url === '') {
         editor.chain().focus().extendMarkRange('link').unsetLink().run();
       } else {
@@ -319,56 +345,36 @@ export default function TiptapEditor({ docId }: TiptapEditorProps) {
     }
   }, [editor]);
 
-  // 切换代码块
   const toggleCodeBlock = useCallback(() => {
     if (editor) {
       editor.chain().focus().toggleCodeBlock().run();
     }
   }, [editor]);
 
-  // 切换任务列表
   const toggleTaskList = useCallback(() => {
     if (editor) {
       editor.chain().focus().toggleTaskList().run();
     }
   }, [editor]);
 
-  const generateVirtualCursor = useCallback((): VirtualCursor => {
-    const user = VIRTUAL_USERS[Math.floor(Math.random() * VIRTUAL_USERS.length)];
-    return {
-      id: Math.random().toString(36).substr(2, 9),
-      name: user.name,
-      color: user.color,
-      top: 100 + Math.random() * 400,
-      left: 50 + Math.random() * 600,
-      visible: true,
-    };
-  }, []);
-
   useEffect(() => {
-    if (!editor) return;
-
-    const interval = setInterval(() => {
-      if (Math.random() > 0.6) {
-        const newCursor = generateVirtualCursor();
-        setVirtualCursors(prev => [...prev, newCursor]);
-
-        setTimeout(() => {
-          setVirtualCursors(prev => prev.filter(c => c.id !== newCursor.id));
-        }, 4000 + Math.random() * 3000);
-      }
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, [editor, generateVirtualCursor]);
+    if (editor && currentFile) {
+      editor.commands.setContent(currentFile.content || '', false);
+    }
+  }, [editor, currentFile]);
 
   if (!editor) {
-    return null;
+    return (
+      <div className="flex items-center justify-center h-32">
+        <div className="text-gray-500">编辑器加载中...</div>
+      </div>
+    );
   }
 
+  const commands = filteredCommands;
+
   return (
-    <div className="relative max-w-3xl mx-auto" ref={editorRef}>
-      {/* 顶部工具栏 */}
+    <div className="relative max-w-3xl mx-auto">
       <div className="flex items-center justify-between mb-4 px-4 py-2 bg-gray-50 rounded-lg border border-gray-200">
         <div className="flex items-center gap-2 text-sm text-gray-600">
           {isSaving ? (
@@ -384,249 +390,157 @@ export default function TiptapEditor({ docId }: TiptapEditorProps) {
           )}
         </div>
         
-        {/* 快捷工具栏 */}
         <div className="flex items-center gap-1">
-          <button
-            onClick={openImageModal}
-            className="p-2 text-gray-600 hover:bg-gray-200 rounded-md transition-colors"
-            title="插入图片"
-          >
+          <button onClick={openImageModal} className="p-2 text-gray-600 hover:bg-gray-200 rounded-md transition-colors" title="插入图片">
             <ImageIcon className="w-4 h-4" />
           </button>
-          <button
-            onClick={addLink}
-            className={`p-2 rounded-md transition-colors ${editor.isActive('link') ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}
-            title="插入链接"
-          >
+          <button onClick={addLink} className={`p-2 rounded-md transition-colors ${editor.isActive('link') ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`} title="插入链接">
             <LinkIcon className="w-4 h-4" />
           </button>
-          <button
-            onClick={toggleCodeBlock}
-            className={`p-2 rounded-md transition-colors ${editor.isActive('codeBlock') ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}
-            title="代码块"
-          >
+          <button onClick={toggleCodeBlock} className={`p-2 rounded-md transition-colors ${editor.isActive('codeBlock') ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`} title="代码块">
             <Code className="w-4 h-4" />
           </button>
-          <button
-            onClick={toggleTaskList}
-            className={`p-2 rounded-md transition-colors ${editor.isActive('taskList') ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}
-            title="待办清单"
-          >
+          <button onClick={toggleTaskList} className={`p-2 rounded-md transition-colors ${editor.isActive('taskList') ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`} title="待办清单">
             <CheckSquare className="w-4 h-4" />
           </button>
           <div className="w-px h-5 bg-gray-300 mx-1" />
-          <button
-            onClick={handleManualSave}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-200 rounded-md transition-colors"
-          >
+          <button onClick={handleManualSave} className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-200 rounded-md transition-colors">
             <Save className="w-4 h-4" />
             保存
           </button>
         </div>
       </div>
 
-      {/* 图片上传模态框 */}
       {showImageModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl p-6 w-96 max-w-[90vw]">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-gray-900">插入图片</h3>
-              <button
-                onClick={closeImageModal}
-                className="p-1 hover:bg-gray-100 rounded-md transition-colors"
-              >
+              <button onClick={closeImageModal} className="p-1 hover:bg-gray-100 rounded-md transition-colors">
                 <X className="w-5 h-5 text-gray-500" />
               </button>
             </div>
             
             <div className="space-y-4">
-              {/* 拖拽区域 */}
               <div
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
-                className={`
-                  border-2 border-dashed rounded-lg p-8 text-center transition-colors
-                  ${isDragOver 
-                    ? 'border-blue-500 bg-blue-50' 
-                    : 'border-gray-300 hover:border-gray-400'
-                  }
-                `}
+                className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
+                  isDragOver ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-gray-400'
+                }`}
               >
                 <Upload className="w-12 h-12 mx-auto mb-3 text-gray-400" />
-                <p className="text-sm text-gray-600 mb-2">
-                  拖拽图片到此处，或
-                </p>
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
-                >
+                <p className="text-sm text-gray-600 mb-2">拖拽图片到此处，或</p>
+                <button onClick={() => fileInputRef.current?.click()} className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors">
                   选择文件
                 </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleFileSelect}
-                  className="hidden"
-                />
+                <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileSelect} className="hidden" />
               </div>
-
-              <div className="text-center text-xs text-gray-500">
-                支持 JPG、PNG、GIF、WebP 格式
-              </div>
+              <div className="text-center text-xs text-gray-500">支持 JPG、PNG、GIF、WebP 格式</div>
             </div>
           </div>
         </div>
       )}
 
-      {/* 编辑器拖拽区域 */}
-      <div
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        className="relative"
-      >
-        {/* 拖拽提示遮罩 */}
+      {showCommandMenu && (
+        <div className="fixed inset-0 bg-black/20 flex items-start justify-center pt-24 z-50" onClick={() => setShowCommandMenu(false)}>
+          <div className="bg-white rounded-lg shadow-2xl w-96 max-h-96 overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-100">
+              <Hash className="w-4 h-4 text-gray-400" />
+              <input
+                type="text"
+                value={commandSearch}
+                onChange={(e) => setCommandSearch(e.target.value)}
+                placeholder="搜索命令..."
+                className="flex-1 bg-transparent text-sm outline-none"
+                autoFocus
+              />
+              <kbd className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">ESC</kbd>
+            </div>
+            
+            <div className="overflow-y-auto max-h-72">
+              {commands.length > 0 ? (
+                commands.map((cmd, index) => (
+                  <button
+                    key={cmd.id}
+                    onClick={() => handleCommand(cmd.id)}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-gray-50 transition-colors ${index === 0 ? 'bg-gray-50' : ''}`}
+                  >
+                    <div className="w-8 h-8 flex items-center justify-center text-gray-600">
+                      {cmd.icon}
+                    </div>
+                    <div className="flex-1 text-left">
+                      <div className="font-medium text-gray-900">{cmd.title}</div>
+                      <div className="text-xs text-gray-500">{cmd.description}</div>
+                    </div>
+                    {index === 0 && (
+                      <kbd className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">Enter</kbd>
+                    )}
+                  </button>
+                ))
+              ) : (
+                <div className="px-4 py-8 text-center text-gray-500">未找到匹配的命令</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} className="relative">
         {isDragOver && (
-          <div className="absolute inset-0 bg-blue-500/10 border-2 border-blue-500 border-dashed rounded-lg z-40 flex items-center justify-center">
-            <div className="bg-white px-6 py-4 rounded-lg shadow-lg">
-              <Upload className="w-8 h-8 mx-auto mb-2 text-blue-500" />
-              <p className="text-sm text-gray-700">释放以上传图片</p>
+          <div className="absolute inset-0 bg-blue-100/50 border-2 border-dashed border-blue-500 rounded-lg flex items-center justify-center z-10">
+            <div className="text-center">
+              <Upload className="w-12 h-12 mx-auto mb-2 text-blue-500" />
+              <p className="text-blue-600 font-medium">释放以上传图片</p>
             </div>
           </div>
         )}
 
-        {/* 悬浮工具栏 */}
         <BubbleMenu
           editor={editor}
-          tippyOptions={{
-            duration: 0,
-            interactive: true,
-            zIndex: 9999,
-          }}
-          shouldShow={({ editor, view, from, to }) => {
-            if (from === to || editor.state.selection.empty) return false;
-            
-            const event = view.inputEvent;
-            if (event && (event.type === 'mousedown' || event.type === 'mousemove')) return false;
-            
-            return true;
-          }}
-          className="bubble-menu-container flex items-center gap-1 bg-slate-900 text-white rounded-lg shadow-xl p-1.5"
+          tippyOptions={{ duration: 100, arrow: false, offset: [0, 8] }}
+          className="flex items-center gap-1 px-2 py-1 bg-white rounded-lg shadow-lg border border-gray-200"
         >
-          <button
-            onClick={() => editor.chain().focus().toggleBold().run()}
-            className={`p-2 rounded-md transition-colors ${editor.isActive('bold') ? 'bg-white/20' : 'hover:bg-white/10'}`}
-            title="加粗"
-            onMouseDown={(e) => e.preventDefault()}
-          >
+          <button onClick={() => editor.chain().focus().toggleBold().run()} className={`p-2 rounded-md transition-colors ${editor.isActive('bold') ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`} title="粗体 (Ctrl+B)">
             <Bold className="w-4 h-4" />
           </button>
-
-          <button
-            onClick={() => editor.chain().focus().toggleItalic().run()}
-            className={`p-2 rounded-md transition-colors ${editor.isActive('italic') ? 'bg-white/20' : 'hover:bg-white/10'}`}
-            title="斜体"
-            onMouseDown={(e) => e.preventDefault()}
-          >
+          <button onClick={() => editor.chain().focus().toggleItalic().run()} className={`p-2 rounded-md transition-colors ${editor.isActive('italic') ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`} title="斜体 (Ctrl+I)">
             <Italic className="w-4 h-4" />
           </button>
-
-          <div className="w-px h-5 bg-white/20 mx-1" />
-
-          <button
-            onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
-            className={`p-2 rounded-md transition-colors ${editor.isActive('heading', { level: 1 }) ? 'bg-white/20' : 'hover:bg-white/10'}`}
-            title="标题 1"
-            onMouseDown={(e) => e.preventDefault()}
-          >
+          <div className="w-px h-5 bg-gray-200 mx-1" />
+          <button onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} className={`p-2 rounded-md transition-colors ${editor.isActive('heading', { level: 1 }) ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`} title="标题 1">
             <Heading1 className="w-4 h-4" />
           </button>
-
-          <button
-            onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-            className={`p-2 rounded-md transition-colors ${editor.isActive('heading', { level: 2 }) ? 'bg-white/20' : 'hover:bg-white/10'}`}
-            title="标题 2"
-            onMouseDown={(e) => e.preventDefault()}
-          >
+          <button onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} className={`p-2 rounded-md transition-colors ${editor.isActive('heading', { level: 2 }) ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`} title="标题 2">
             <Heading2 className="w-4 h-4" />
           </button>
-
-          <div className="w-px h-5 bg-white/20 mx-1" />
-
-          <button
-            onClick={() => editor.chain().focus().toggleBulletList().run()}
-            className={`p-2 rounded-md transition-colors ${editor.isActive('bulletList') ? 'bg-white/20' : 'hover:bg-white/10'}`}
-            title="无序列表"
-            onMouseDown={(e) => e.preventDefault()}
-          >
+          <button onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} className={`p-2 rounded-md transition-colors ${editor.isActive('heading', { level: 3 }) ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`} title="标题 3">
+            <Heading3 className="w-4 h-4" />
+          </button>
+          <div className="w-px h-5 bg-gray-200 mx-1" />
+          <button onClick={() => editor.chain().focus().toggleBulletList().run()} className={`p-2 rounded-md transition-colors ${editor.isActive('bulletList') ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`} title="无序列表">
             <List className="w-4 h-4" />
           </button>
-
-          <button
-            onClick={() => editor.chain().focus().toggleOrderedList().run()}
-            className={`p-2 rounded-md transition-colors ${editor.isActive('orderedList') ? 'bg-white/20' : 'hover:bg-white/10'}`}
-            title="有序列表"
-            onMouseDown={(e) => e.preventDefault()}
-          >
+          <button onClick={() => editor.chain().focus().toggleOrderedList().run()} className={`p-2 rounded-md transition-colors ${editor.isActive('orderedList') ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`} title="有序列表">
             <ListOrdered className="w-4 h-4" />
           </button>
-
-          <div className="w-px h-5 bg-white/20 mx-1" />
-
-          <button
-            onClick={() => console.log('AI 助手')}
-            className="p-2 rounded-md transition-colors hover:bg-white/10 text-purple-300"
-            title="AI 助手"
-            onMouseDown={(e) => e.preventDefault()}
-          >
-            <Sparkles className="w-4 h-4" />
+          <button onClick={() => editor.chain().focus().toggleTaskList().run()} className={`p-2 rounded-md transition-colors ${editor.isActive('taskList') ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`} title="待办清单">
+            <CheckSquare className="w-4 h-4" />
           </button>
-
-          <button
-            onClick={() => console.log('评论')}
-            className="p-2 rounded-md transition-colors hover:bg-white/10"
-            title="评论"
-            onMouseDown={(e) => e.preventDefault()}
-          >
-            <MessageSquare className="w-4 h-4" />
+          <div className="w-px h-5 bg-gray-200 mx-1" />
+          <button onClick={addLink} className={`p-2 rounded-md transition-colors ${editor.isActive('link') ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`} title="插入链接">
+            <LinkIcon className="w-4 h-4" />
+          </button>
+          <button onClick={() => editor.chain().focus().toggleCode().run()} className={`p-2 rounded-md transition-colors ${editor.isActive('code') ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`} title="行内代码">
+            <Code className="w-4 h-4" />
+          </button>
+          <button onClick={() => editor.chain().focus().toggleBlockquote().run()} className={`p-2 rounded-md transition-colors ${editor.isActive('blockquote') ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`} title="引用">
+            <Quote className="w-4 h-4" />
           </button>
         </BubbleMenu>
 
-        {/* 编辑器内容区域 */}
-        <div className="relative min-h-[calc(100vh-200px)] py-8">
-          <EditorContent 
-            editor={editor} 
-            className="prose-editor focus:outline-none"
-          />
-
-          {/* 虚拟用户光标 */}
-          {virtualCursors.map((cursor) => (
-            <div
-              key={cursor.id}
-              className="absolute pointer-events-none transition-all duration-700 ease-out z-30"
-              style={{
-                top: cursor.top,
-                left: cursor.left,
-              }}
-            >
-              <div
-                className="w-0.5 h-5 animate-pulse"
-                style={{ 
-                  backgroundColor: cursor.color,
-                  boxShadow: `0 0 6px ${cursor.color}`
-                }}
-              />
-              <div
-                className="absolute -top-7 left-0 px-2 py-1 rounded-md text-xs text-white whitespace-nowrap font-medium shadow-lg"
-                style={{ backgroundColor: cursor.color }}
-              >
-                {cursor.name}
-              </div>
-            </div>
-          ))}
-        </div>
+        <EditorContent editor={editor} className="prose prose-gray max-w-none" />
       </div>
     </div>
   );

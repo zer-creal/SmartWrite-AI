@@ -1,7 +1,7 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
-/node_modules
+**/node_modules
 /.pnp
 .pnp.*
 .yarn/*
@@ -10,28 +10,62 @@
 !.yarn/releases
 !.yarn/versions
 
+# lock files - only keep one!
+package-lock.json
+yarn.lock
+
 # testing
 /coverage
+**/__pycache__/
 
 # next.js
-/.next/
+**/.next
 /out/
+
+# pnpm store
+.pnpm-store
+
+# cache
+.cache
+.turbo
+.parcel-cache
+.eslintcache
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# data files
+/apps/web/.data/
+*.db
+*.sqlite
+*.sqlite3
 
 # production
 /build
+/dist
 
-# misc
-.DS_Store
-*.pem
+# project docs (plans/tasks)
+/plan.md
+/tasks.md
+/PROJECT_CHECK.md
 
 # debug
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+lerna-debug.log*
+debug.log
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -39,3 +73,31 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# docker
+docker-compose.override.yml
+
+# misc
+*.pem
+*.pem.key
+*.crt
+*.key
+*.p12
+*.pfx
+
+# temp files
+*.tmp
+*.temp
+delete
+
+# compiled files
+*.exe
+*.dll
+*.so
+*.dylib
+*.class
+*.pyc
+*.pyo
+*.o
+*.obj
+*.swf
